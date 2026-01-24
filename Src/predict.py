@@ -96,8 +96,6 @@ def DeepETD_predict(config_path='predict_config.yaml'):
     state = torch.load(cfg['model']['checkpoint'], map_location='cpu')
     model.load_state_dict(state)
 
-    layer_stats = diagnose_model_issues(model, loaded['text'], loaded['encoders'])
-
     protein_names, compound_names = extract_names_from_text_json(cfg['data']['text_json'])
 
     scores = predict(model, loaded['text'])
@@ -110,109 +108,6 @@ def DeepETD_predict(config_path='predict_config.yaml'):
         cfg['prediction']['output_file'],
         topk=cfg['prediction']['topk']
     )
-
-
-def diagnose_model_issues(model, dataloader, encoders):
-    """
-    诊断模型问题的根本原因
-    """
-    print("🔍 开始模型诊断...")
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-
-    # 1. 检查模型参数
-    print("\n1. 模型参数检查:")
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"   总参数: {total_params:,}")
-    print(f"   可训练参数: {trainable_params:,}")
-    print(f"   冻结参数: {total_params - trainable_params:,}")
-
-    # 检查梯度
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"   {name}: shape={param.shape}, grad={param.grad is not None}")
-
-    # 2. 检查输入数据
-    print("\n2. 输入数据检查:")
-    for i, (inputs, labels) in enumerate(dataloader):
-        if i >= 1:  # 只检查第一个批次
-            break
-
-        (cd, cp, cs, pd, pp, ps) = inputs
-
-        print(f"   批次 {i}:")
-        print(f"     cd形状: {cd.shape}, 范围: [{cd.min():.3f}, {cd.max():.3f}]")
-        print(f"     cd唯一值: {torch.unique(cd)}")
-        print(f"     标签分布: 正={torch.sum(labels).item()}, 负={len(labels) - torch.sum(labels).item()}")
-
-        # 检查是否有NaN或Inf
-        for name, tensor in [("cd", cd), ("cp", cp), ("cs", cs),
-                             ("pd", pd), ("pp", pp), ("ps", ps)]:
-            if torch.isnan(tensor).any():
-                print(f"    ⚠️ {name} 包含NaN!")
-            if torch.isinf(tensor).any():
-                print(f"    ⚠️ {name} 包含无穷值!")
-
-    # 3. 检查编码器
-    print("\n3. 编码器检查:")
-    print(f"   疾病编码器类别数: {len(encoders['disease'].classes_)}")
-    print(f"   表型编码器类别数: {len(encoders['phenotype'].classes_)}")
-    print(f"   亚细胞定位编码器类别数: {len(encoders['subcellular'].classes_)}")
-
-    # 4. 前向传播测试
-    print("\n4. 前向传播测试:")
-    model.eval()
-    with torch.no_grad():
-        for i, (inputs, _) in enumerate(dataloader):
-            if i >= 2:
-                break
-
-            (cd, cp, cs, pd, pp, ps) = inputs
-            cd, cp, cs, pd, pp, ps = cd.to(device), cp.to(device), cs.to(device), pd.to(device), pp.to(device), ps.to(
-                device)
-
-            # 逐层检查
-            logits = model(cd, cp, cs, pd, pp, ps)
-            probs = torch.sigmoid(logits)
-
-            print(f"   批次 {i}:")
-            print(f"     输入形状: cd={cd.shape}")
-            print(f"     输出logits: {logits}")
-            print(f"     预测概率: {probs}")
-
-            # 检查输出是否相同
-            if i == 0:
-                first_logits = logits
-            else:
-                if torch.allclose(first_logits, logits, rtol=1e-3):
-                    print("    ⚠️ 不同批次的输出完全相同！")
-
-    # 5. 检查模型权重
-    print("\n5. 模型权重检查:")
-    layer_stats = []
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            stats = {
-                'name': name,
-                'mean': param.mean().item(),
-                'std': param.std().item(),
-                'min': param.min().item(),
-                'max': param.max().item(),
-                'zero_ratio': (param == 0).sum().item() / param.numel()
-            }
-            layer_stats.append(stats)
-
-            if stats['std'] < 1e-6:
-                print(f"    ⚠️ {name}: 权重标准差太小 ({stats['std']:.6f})")
-            if stats['zero_ratio'] > 0.9:
-                print(f"    ⚠️ {name}: 超过90%的权重为0")
-
-    return layer_stats
-
-
-# 使用诊断函数
 
 
 if __name__ == '__main__':
